@@ -99,7 +99,7 @@ def test_generated_source_copy_and_replace_preserve_identity_and_format(tmp_path
 
 
 @pytest.mark.parametrize('overrides', [
-    {'start': -.1}, {'start': 601}, {'start': 'NaN'}, {'fade_in': 'Infinity'},
+    {'start': -.1}, {'start': 'NaN'}, {'fade_in': 'Infinity'},
     {'fade_in': -1}, {'fade_out': 2}, {'kind': 'file'}, {'id': '../secret'},
 ])
 def test_invalid_tracks_leave_original_untouched(tmp_path, overrides):
@@ -136,7 +136,7 @@ def test_failed_encoding_keeps_original_audio_and_metadata(tmp_path, monkeypatch
         job = wait_job(client, initial['id'])
         url = f"/api/generations/{job['id']}"
         original = client.get(url + '/audio').content
-        def fail(*_):
+        def fail(*_, **__):
             raise RuntimeError('Encoder failed')
         monkeypatch.setattr('voice_studio.audio_editor.export_audio', fail)
         response = client.post('/api/editor/mixes', json={
@@ -190,16 +190,18 @@ def test_short_silent_imports_and_browser_recorded_containers_are_supported(tmp_
         assert .09 < recorded.json()['duration'] < .11
 
 
-def test_long_import_is_rejected_instead_of_truncated(tmp_path, monkeypatch):
-    monkeypatch.setattr('voice_studio.audio_editor.MAX_SOURCE_SECONDS', 1)
-    # decode_source's explicit limit can be exercised without a ten-minute fixture.
-    from voice_studio.audio_editor import decode_source
-    source = tmp_path / 'long.wav'
-    source.write_bytes(audio_bytes(np.zeros(48000)))
-    destination = tmp_path / 'result.wav'
-    with pytest.raises(ValueError, match='не більше'):
-        decode_source(source, destination, max_seconds=1)
-    assert not destination.exists()
+def test_import_beyond_ten_minutes_keeps_full_source(tmp_path, monkeypatch):
+    monkeypatch.setattr('voice_studio.audio_editor.SAMPLE_RATE', 1000)
+    source = tmp_path / 'long.flac'
+    sf.write(source, np.zeros((601000, 2), dtype=np.float32), 1000)
+    with TestClient(create_app(tmp_path, FakeEngine(False))) as client:
+        response = client.post('/api/editor/sources', files={'sample': ('long.flac', source.read_bytes(), 'audio/flac')})
+        assert response.status_code == 201, response.text
+        assert response.json()['duration'] == 601
+        key = response.json()['id']
+        assert sf.info(tmp_path / 'editor_sources' / f'{key}.wav').duration == 601
+        description = client.get(f'/api/editor/sources/upload/{key}').json()
+        assert description['duration'] == 601 and len(description['peaks']) == 180
 
 
 def test_multiple_source_sample_rates_are_converted_without_changing_timing(tmp_path):
@@ -347,7 +349,7 @@ def test_many_tracks_have_no_fixed_count_limit_and_decode_duplicate_source_once(
 @pytest.mark.parametrize('settings', [
     {'loop': True, 'loop_duration': 0}, {'loop': True, 'loop_duration': -1},
     {'loop': True, 'loop_duration': 'NaN'}, {'loop': True, 'loop_duration': 'Infinity'},
-    {'loop': True, 'loop_duration': 1201}, {'loop': True, 'loop_duration': 1200, 'start': 1},
+    {'loop': True, 'loop_duration': 1e-9},
     {'loop': True, 'loop_duration': .5, 'fade_out': .6},
 ])
 def test_bad_loop_durations_never_publish_output(tmp_path, settings):
@@ -428,3 +430,82 @@ def test_editor_rejects_unsupported_mp3_quality(tmp_path, bitrate):
         assert response.status_code == 422, response.text
         assert client.get('/api/generations').json() == []
         assert not list((tmp_path / 'outputs').iterdir())
+
+
+def test_long_timeline_offsets_fades_loops_and_trim_survive_export_and_reopen(tmp_path, monkeypatch):
+    # A lower test sample rate exercises real long durations without gigabyte fixtures.
+    monkeypatch.setattr('voice_studio.audio_editor.SAMPLE_RATE', 1000)
+    with TestClient(create_app(tmp_path, FakeEngine(False))) as client:
+        source = upload(client, np.full((2400, 2), .1))
+        tracks = [spec(source, start=901.25, loop=True, loop_duration=1801.5, fade_in=601, fade_out=602)]
+        response = client.post('/api/editor/mixes', json={'tracks': tracks, 'name': 'Монтаж довший за 20 хвилин'})
+        assert response.status_code == 201, response.text
+        result = response.json()
+        assert result['duration'] == 2702.75
+        path = tmp_path / 'outputs' / f"{result['id']}.wav"
+        assert sf.info(path).duration == 2702.75
+        with sf.SoundFile(path) as recording:
+            assert not recording.read(901250).any()
+            recording.seek(1800000)
+            np.testing.assert_allclose(recording.read(1)[0], [.1, .1], atol=.001)
+        description = client.get(f"/api/editor/sources/generation/{result['id']}")
+        assert description.status_code == 200, description.text
+        assert description.json()['duration'] == 2702.75
+        cropped = client.post('/api/editor/mixes', json={'tracks': [{
+            'kind': 'generation', 'id': result['id'], 'trim_start': 2400.25, 'trim_end': 2501.5,
+        }]})
+        assert cropped.status_code == 201, cropped.text
+        assert cropped.json()['duration'] == 101.25
+
+
+def test_editor_import_is_independent_of_voice_sample_size_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr('voice_studio.app.MAX_UPLOAD', 128)
+    with TestClient(create_app(tmp_path, FakeEngine(False))) as client:
+        source = upload(client)
+        assert source['duration'] == 1
+        voice = client.post('/api/voices', data={'name': 'Голос', 'transcript': 'Текст'},
+                            files={'sample': ('voice.wav', audio_bytes(), 'audio/wav')})
+        assert voice.status_code == 413
+
+
+@pytest.mark.parametrize('output_format', ['wav', 'flac', 'mp3'])
+def test_large_wav_container_can_be_rendered_and_encoded(tmp_path, monkeypatch, output_format):
+    monkeypatch.setattr('voice_studio.audio_editor.RIFF_LIMIT', 1024)
+    with TestClient(create_app(tmp_path, FakeEngine(False))) as client:
+        source = upload(client, np.tile([.1, -.05], (2400, 1)))
+        response = client.post('/api/editor/mixes', json={'tracks': [spec(source)], 'output_format': output_format})
+        assert response.status_code == 201, response.text
+        path = tmp_path / 'outputs' / f"{response.json()['id']}.{output_format}"
+        recording = sf.info(path)
+        assert recording.channels == 2 and recording.samplerate == 48000
+        assert recording.duration == .1
+        if output_format == 'wav':
+            assert recording.format == 'RF64'
+
+
+def test_insufficient_disk_space_rejects_render_without_publishing(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    with TestClient(create_app(tmp_path, FakeEngine(False))) as client:
+        source = upload(client)
+        monkeypatch.setattr('voice_studio.audio_editor.shutil.disk_usage', lambda _: SimpleNamespace(free=0))
+        response = client.post('/api/editor/mixes', json={'tracks': [spec(source)]})
+        assert response.status_code == 422, response.text
+        assert 'Недостатньо вільного місця' in response.json()['detail']
+        assert client.get('/api/generations').json() == []
+        assert not list((tmp_path / 'outputs').iterdir())
+
+
+def test_editor_codec_calls_allow_long_processing(tmp_path, monkeypatch):
+    from voice_studio import audio_editor, audio_processing
+    run = audio_processing.run_ffmpeg
+    timeouts = []
+    def record_timeout(*args, **kwargs):
+        timeouts.append(kwargs.get('timeout', 120))
+        return run(*args, **kwargs)
+    monkeypatch.setattr(audio_editor, 'run_ffmpeg', record_timeout)
+    monkeypatch.setattr(audio_processing, 'run_ffmpeg', record_timeout)
+    with TestClient(create_app(tmp_path, FakeEngine(False))) as client:
+        source = upload(client)
+        response = client.post('/api/editor/mixes', json={'tracks': [spec(source)], 'output_format': 'mp3'})
+        assert response.status_code == 201, response.text
+    assert timeouts and all(timeout is None for timeout in timeouts)

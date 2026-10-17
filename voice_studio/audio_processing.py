@@ -10,11 +10,11 @@ MAX_SPEED = 1.3
 MP3_BITRATES = (64, 96, 128)
 
 
-def run_ffmpeg(arguments, audio=None):
+def run_ffmpeg(arguments, audio=None, *, timeout=120):
     try:
         result = subprocess.run(
             [imageio_ffmpeg.get_ffmpeg_exe(), "-nostdin", "-hide_banner", "-loglevel", "error", *arguments],
-            input=audio, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120, check=True,
+            input=audio, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, check=True,
         )
     except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
         raise RuntimeError("Не вдалося обробити аудіо. Перевірте встановлення залежностей через setup.command.") from exc
@@ -37,7 +37,7 @@ def change_tempo(audio, sample_rate, speed):
     return adjusted
 
 
-def export_audio(source, destination, mp3_bitrate=128):
+def export_audio(source, destination, mp3_bitrate=128, *, timeout=120):
     output_format = destination.suffix.lstrip(".").lower()
     if output_format not in MIME_TYPES:
         raise ValueError("Оберіть WAV, FLAC або MP3.")
@@ -52,7 +52,7 @@ def export_audio(source, destination, mp3_bitrate=128):
         # Both renderers supply PCM16 WAV. Explicit decoding prevents periodic PCM
         # patterns from being incorrectly detected as MPEG audio inside the WAV.
         run_ffmpeg(["-y", "-f", "wav", "-c:a", "pcm_s16le", "-i", str(source),
-                    "-map", "0:a:0", *codec, "-f", output_format, str(temporary)])
+                    "-map", "0:a:0", *codec, "-f", output_format, str(temporary)], timeout=timeout)
         temporary.replace(destination)
     finally:
         temporary.unlink(missing_ok=True)

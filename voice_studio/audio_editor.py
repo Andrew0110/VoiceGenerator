@@ -1,5 +1,6 @@
 """Bounded stereo decoding and block-wise timeline mixing, independent of the model."""
 from pathlib import Path
+import shutil
 from tempfile import TemporaryDirectory
 
 import numpy as np
@@ -10,8 +11,18 @@ from typing import Literal
 from .audio_processing import export_audio, run_ffmpeg
 
 SAMPLE_RATE = 48000
-MAX_SOURCE_SECONDS = 600
-MAX_TIMELINE_SECONDS = 1200
+RIFF_LIMIT = 2**32 - 1
+
+
+def wav_format(frames, sample_bytes):
+    # RF64 extends WAV's 4 GiB container limit; ordinary files stay browser-friendly WAV.
+    return "RF64" if frames * 2 * sample_bytes + 4096 >= RIFF_LIMIT else "WAV"
+
+
+def sample_position(seconds):
+    if seconds > (2**63 - 1) // SAMPLE_RATE:
+        raise ValueError("Заданий час виходить за технічні межі аудіоформату.")
+    return round(seconds * SAMPLE_RATE)
 
 
 def waveform(path: Path):
@@ -20,22 +31,28 @@ def waveform(path: Path):
         for left, right in zip(np.linspace(0, audio.frames, 181, dtype=int)[:-1],
                                np.linspace(0, audio.frames, 181, dtype=int)[1:]):
             audio.seek(left)
-            block = audio.read(max(1, right - left), dtype="float32", always_2d=True)
-            peaks.append(round(float(np.max(np.abs(block))) if block.size else 0, 4))
+            remaining, peak = max(1, right - left), 0.0
+            while remaining:
+                block = audio.read(min(65536, remaining), dtype="float32", always_2d=True)
+                if not len(block):
+                    break
+                peak = max(peak, float(np.max(np.abs(block))))
+                remaining -= len(block)
+            peaks.append(round(peak, 4))
         return {"duration": audio.frames / audio.samplerate, "peaks": peaks}
 
 
 class EditorTrack(BaseModel):
     kind: Literal["generation", "upload"]
     id: str = Field(pattern=r"^[a-f0-9]{32}$")
-    start: float = Field(default=0, ge=0, le=600, allow_inf_nan=False)
-    fade_in: float = Field(default=0, ge=0, le=600, allow_inf_nan=False)
-    fade_out: float = Field(default=0, ge=0, le=600, allow_inf_nan=False)
-    trim_start: float = Field(default=0, ge=0, le=MAX_TIMELINE_SECONDS, allow_inf_nan=False)
-    trim_end: float | None = Field(default=None, ge=0, le=MAX_TIMELINE_SECONDS, allow_inf_nan=False)
+    start: float = Field(default=0, ge=0, allow_inf_nan=False)
+    fade_in: float = Field(default=0, ge=0, allow_inf_nan=False)
+    fade_out: float = Field(default=0, ge=0, allow_inf_nan=False)
+    trim_start: float = Field(default=0, ge=0, allow_inf_nan=False)
+    trim_end: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     volume: float = Field(default=1, ge=0, le=4, allow_inf_nan=False)
     loop: bool = False
-    loop_duration: float | None = Field(default=None, gt=0, le=MAX_TIMELINE_SECONDS, allow_inf_nan=False)
+    loop_duration: float | None = Field(default=None, gt=0, allow_inf_nan=False)
 
 
 class MixRequest(BaseModel):
@@ -46,19 +63,19 @@ class MixRequest(BaseModel):
     replace_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
 
 
-def decode_source(source: Path, destination: Path, max_seconds=MAX_SOURCE_SECONDS):
-    """Reject long inputs rather than silently truncating them; keep stereo channels."""
+def decode_source(source: Path, destination: Path):
+    """Decode the complete source with bounded memory; keep stereo channels."""
     try:
         run_ffmpeg([
             "-y", "-protocol_whitelist", "file,pipe",
             "-format_whitelist", "wav,flac,aiff,mp3,matroska,webm,ogg,mov",
-            "-i", str(source), "-map", "0:a:0", "-vn", "-t", str(max_seconds + .1),
-            "-ac", "2", "-ar", str(SAMPLE_RATE), "-c:a", "pcm_f32le", str(destination),
-        ])
+            "-i", str(source), "-map", "0:a:0", "-vn",
+            "-ac", "2", "-ar", str(SAMPLE_RATE), "-c:a", "pcm_f32le", "-rf64", "auto", str(destination),
+        ], timeout=None)
         with sf.SoundFile(destination) as audio:
             duration = audio.frames / audio.samplerate
-            if not 0 < duration <= max_seconds:
-                raise ValueError(f"Доріжка має бути непорожньою та тривати не більше {max_seconds // 60} хвилин.")
+            if duration <= 0:
+                raise ValueError("Доріжка має містити непорожнє аудіо.")
             for block in audio.blocks(blocksize=65536, dtype="float32"):
                 if not np.isfinite(block).all():
                     raise ValueError("Аудіофайл містить некоректні дані.")
@@ -77,19 +94,19 @@ def render_mix(tracks, destination: Path, mp3_bitrate=128):
             # Reusing an audio file across rows does not decode or store it repeatedly.
             if source not in decoded_sources:
                 decoded = directory / f"source-{len(decoded_sources)}.wav"
-                decode_source(source, decoded, MAX_TIMELINE_SECONDS if track.kind == "generation" else MAX_SOURCE_SECONDS)
+                decode_source(source, decoded)
                 decoded_sources[source] = decoded
             decoded = decoded_sources[source]
             with sf.SoundFile(decoded) as recording:
-                first = round(track.trim_start * SAMPLE_RATE)
-                last = recording.frames if track.trim_end is None else round(track.trim_end * SAMPLE_RATE)
+                first = sample_position(track.trim_start)
+                last = recording.frames if track.trim_end is None else sample_position(track.trim_end)
                 if not 0 <= first < last <= recording.frames:
                     raise ValueError("Оберіть непорожній фрагмент у межах початкової доріжки: «Від» має бути меншим за «До».")
             prepared.append(dict(track=track, path=decoded, first=first, length=last - first,
-                                 start=round(track.start * SAMPLE_RATE)))
+                                 start=sample_position(track.start)))
 
         natural_end = max(item["start"] + item["length"] for item in prepared)
-        anchors = [item["start"] + (round(item["track"].loop_duration * SAMPLE_RATE)
+        anchors = [item["start"] + (sample_position(item["track"].loop_duration)
                    if item["track"].loop and item["track"].loop_duration is not None else item["length"])
                    for item in prepared if not item["track"].loop or item["track"].loop_duration is not None]
         end = max(anchors, default=natural_end)
@@ -98,19 +115,22 @@ def render_mix(tracks, destination: Path, mp3_bitrate=128):
                   if item["track"].loop and item["track"].loop_duration is None and item["start"] >= end), default=end))
         for item in prepared:
             track = item["track"]
-            item["playback"] = (round(track.loop_duration * SAMPLE_RATE) if track.loop_duration is not None
+            item["playback"] = (sample_position(track.loop_duration) if track.loop_duration is not None
                                 else end - item["start"]) if track.loop else item["length"]
             if item["playback"] < 1:
                 raise ValueError("Тривалість повторення має бути щонайменше один аудіосемпл.")
-            if max(round(track.fade_in * SAMPLE_RATE), round(track.fade_out * SAMPLE_RATE)) > item["playback"]:
+            if max(sample_position(track.fade_in), sample_position(track.fade_out)) > item["playback"]:
                 raise ValueError("Наростання та затухання не можуть бути довшими за тривалість доріжки на шкалі.")
         frames = max(item["start"] + item["playback"] for item in prepared)
-        if frames > MAX_TIMELINE_SECONDS * SAMPLE_RATE:
-            raise ValueError("Тривалість міксу не може перевищувати 20 хвилин.")
+        # The actual available disk space, rather than a duration cap, bounds long mixes.
+        required = frames * 2 * (4 + 2) + 1024 * 1024
+        free = shutil.disk_usage(directory).free
+        if required > free:
+            raise ValueError(f"Недостатньо вільного місця для міксу: потрібно приблизно {required / 1e9:.1f} ГБ, доступно {free / 1e9:.1f} ГБ.")
 
         raw = directory / "mix.wav"
         zero = np.zeros((65536, 2), dtype=np.float32)
-        with sf.SoundFile(raw, "w", samplerate=SAMPLE_RATE, channels=2, subtype="FLOAT") as output:
+        with sf.SoundFile(raw, "w", samplerate=SAMPLE_RATE, channels=2, subtype="FLOAT", format=wav_format(frames, 4)) as output:
             for position in range(0, frames, len(zero)):
                 output.write(zero[:min(len(zero), frames - position)])
         # Accumulate one track at a time on disk, keeping file descriptors independent
@@ -138,7 +158,7 @@ def render_mix(tracks, destination: Path, mp3_bitrate=128):
                                 recording.seek(first)
                                 block = np.concatenate((block, recording.read(size - len(block), dtype="float32", always_2d=True)))
                         gain = np.full(size, track.volume, dtype=np.float32)
-                        fade_in, fade_out = round(track.fade_in * SAMPLE_RATE), round(track.fade_out * SAMPLE_RATE)
+                        fade_in, fade_out = sample_position(track.fade_in), sample_position(track.fade_out)
                         if fade_in:
                             gain *= np.minimum(1, indices / max(1, fade_in - 1))
                         if fade_out:
@@ -153,9 +173,9 @@ def render_mix(tracks, destination: Path, mp3_bitrate=128):
                 peak = max(peak, float(np.max(np.abs(block))))
         master = directory / "master.wav"
         with sf.SoundFile(raw) as recording, sf.SoundFile(
-            master, "w", samplerate=SAMPLE_RATE, channels=2, subtype="PCM_16"
+            master, "w", samplerate=SAMPLE_RATE, channels=2, subtype="PCM_16", format=wav_format(frames, 2)
         ) as output:
             for block in recording.blocks(blocksize=65536, dtype="float32", always_2d=True):
                 output.write(block / peak)
-        export_audio(master, destination, mp3_bitrate)
+        export_audio(master, destination, mp3_bitrate, timeout=None)
         return frames / SAMPLE_RATE

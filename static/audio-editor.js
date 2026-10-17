@@ -29,7 +29,8 @@
     return end;
   }
   const playbackDuration = track => track.loop ? (track.loop_duration ?? Math.max(0, loopEnd() - track.start)) : clipDuration(track);
-  const maxStart = track => Math.min(600, 1200 - (track.loop && track.loop_duration != null ? track.loop_duration : clipDuration(track)));
+  const maxStart = track => Math.max(0, extent - (track.loop && track.loop_duration == null ? clipDuration(track) : playbackDuration(track)));
+  const restoredSeconds = value => Number.isFinite(Number(value)) && Number(value) >= 0 && Number.isSafeInteger(Math.round(Number(value) * 48000)) ? Number(value) : 0;
   const totalDuration = () => tracks.reduce((end, track) => Math.max(end, track ? track.start + playbackDuration(track) : 0), 0);
   const rowNumber = index => cards.slice(0, index + 1).filter(Boolean).length;
   const body = () => ({
@@ -140,8 +141,8 @@
     for (const field of ['start', 'fade_in', 'fade_out', 'trim_start', 'trim_end', 'volume']) {
       const input = card.querySelector(`[data-field="${field}"]`);
       input.value = track ? (field === 'volume' ? Math.round(track.volume * 100) : track[field]) : 0;
-      input.max = field === 'volume' ? 400 : field.startsWith('trim_') ? track?.duration || 1200
-        : field === 'start' ? track ? maxStart(track) : 600 : Math.min(600, track ? playbackDuration(track) : 600);
+      if (field === 'start') input.removeAttribute('max');
+      else input.max = field === 'volume' ? 400 : field.startsWith('trim_') ? track?.duration || 0 : track ? playbackDuration(track) : 0;
     }
     card.querySelector('[data-volume]').value = Math.round((track?.volume ?? 1) * 100);
     card.querySelector('[data-edit-summary]').textContent = track ? `${seconds(playbackDuration(track))} · ${Math.round(track.volume * 100)}%${track.loop ? ' · ↻ повторення' : ''}` : '';
@@ -178,7 +179,6 @@
   }
   async function upload(index, file) {
     if (!file || busy) return;
-    if (file.size > 64 * 1024 * 1024) { error('Максимальний розмір файлу — 64 МБ.'); return; }
     const version = ++versions[index];
     busy = true; error(''); updateControls();
     const form = new FormData(); form.set('sample', file);
@@ -191,11 +191,11 @@
   }
 
   const recorder = new VoiceRecorder({
-    minSeconds: .1, maxSeconds: 599,
+    minSeconds: .1, maxBytes: Infinity,
     onState: ({ phase, seconds: elapsed }) => {
       if (recordingSlot !== null) {
         const status = cards[recordingSlot].querySelector('[data-record-status]');
-        status.textContent = phase === 'recording' ? `● Запис ${durationLabel(elapsed)} · до 10 хвилин`
+        status.textContent = phase === 'recording' ? `● Запис ${durationLabel(elapsed)}`
           : phase === 'requesting' ? 'Очікуємо дозвіл на мікрофон…'
             : phase === 'stopping' ? 'Підготовка запису…' : '';
       }
@@ -230,7 +230,7 @@
       <dialog class="track-dialog" aria-labelledby="track-dialog-title-${index}">
         <div class="dialog-heading"><h2 id="track-dialog-title-${index}" data-dialog-title>Доріжка ${index + 1} · монтаж і звук</h2><button class="icon-button" data-close-edit type="button" aria-label="Закрити опції">×</button></div>
         <section class="track-loop"><label class="loop-checkbox"><input id="editor-loop-${index}" data-loop type="checkbox"> Циклічне програвання</label>
-          <label for="editor-loop-duration-${index}">Тривалість повторення, с</label><input id="editor-loop-duration-${index}" data-loop-duration type="number" min="0" max="1200" step="any" placeholder="До кінця спільної шкали" disabled>
+          <label for="editor-loop-duration-${index}">Тривалість повторення, с</label><input id="editor-loop-duration-${index}" data-loop-duration type="number" min="0" step="any" placeholder="До кінця спільної шкали" disabled>
           <p class="field-hint" data-loop-hint>Повторювати обраний фрагмент до кінця спільної шкали.</p>
         </section>
         <div class="track-trim"><div class="card-top"><h4>Обрізання</h4><button class="text-button" data-reset-trim type="button">Увесь трек ↺</button></div>
@@ -239,7 +239,7 @@
           <p class="field-hint">Час у початковому файлі. Повторюється лише обраний фрагмент.</p>
         </div>
         <div class="track-effects">
-          <div><label for="editor-start-${index}">Початок, с</label><input id="editor-start-${index}" data-field="start" type="number" min="0" max="600" step="any" value="0"></div>
+          <div><label for="editor-start-${index}">Початок, с</label><input id="editor-start-${index}" data-field="start" type="number" min="0" step="any" value="0"></div>
           <div><label for="editor-in-${index}">Наростання, с</label><input id="editor-in-${index}" data-field="fade_in" type="number" min="0" step="any" value="0"></div>
           <div><label for="editor-out-${index}">Затухання, с</label><input id="editor-out-${index}" data-field="fade_out" type="number" min="0" step="any" value="0"></div>
         </div><p class="field-hint">Переходи діють на початку й наприкінці доріжки, без повторення на кожному циклі.</p>
@@ -274,14 +274,13 @@
       track.loop = event.target.checked;
       track.fade_in = Math.min(track.fade_in, playbackDuration(track));
       track.fade_out = Math.min(track.fade_out, playbackDuration(track));
-      track.start = Math.min(track.start, maxStart(track));
       error(''); changed(); renderTimeline();
     });
     card.querySelector('[data-loop-duration]').addEventListener('change', event => {
       const track = tracks[index]; if (!track) return;
       const value = event.target.value.trim() === '' ? null : Number(event.target.value);
-      if (value !== null && (!Number.isFinite(value) || Math.round(value * 48000) < 1 || value + track.start > 1200)) {
-        error('Задай додатну тривалість у межах 20 хвилин разом зі зміщенням або залиш поле порожнім.'); updateCard(index); return;
+      if (value !== null && (!Number.isFinite(value) || !Number.isSafeInteger(Math.round(value * 48000)) || Math.round(value * 48000) < 1)) {
+        error('Задай додатну тривалість повторення або залиш поле порожнім.'); updateCard(index); return;
       }
       track.loop_duration = value;
       track.fade_in = Math.min(track.fade_in, playbackDuration(track)); track.fade_out = Math.min(track.fade_out, playbackDuration(track));
@@ -290,8 +289,9 @@
     card.querySelectorAll('[data-field]').forEach(input => input.addEventListener('change', () => {
       const value = Number(input.value), track = tracks[index];
       if (!track) return;
-      if (!input.value.trim() || !Number.isFinite(value) || value < 0 || value > Number(input.max)) {
-        error(`Введи число від 0 до ${input.max}.`); updateCard(index); return;
+      const maximum = input.max === '' ? Infinity : Number(input.max);
+      if (!input.value.trim() || !Number.isFinite(value) || !Number.isSafeInteger(Math.round(value * 48000)) || value < 0 || value > maximum) {
+        error(Number.isFinite(maximum) ? `Введи число від 0 до ${input.max}.` : 'Введи коректний невід’ємний час у секундах.'); updateCard(index); return;
       }
       const field = input.dataset.field;
       const first = field === 'trim_start' ? value : track.trim_start;
@@ -303,7 +303,6 @@
       if (field.startsWith('trim_')) {
         track.fade_in = Math.min(track.fade_in, playbackDuration(track));
         track.fade_out = Math.min(track.fade_out, playbackDuration(track));
-        track.start = Math.min(track.start, maxStart(track));
       }
       error(''); changed(); updateCard(index); renderTimeline();
     }));
@@ -320,7 +319,6 @@
       const track = tracks[index];
       if (!track) return;
       track.trim_start = 0; track.trim_end = track.duration;
-      track.start = Math.min(track.start, maxStart(track));
       error(''); changed(); updateCard(index); renderTimeline();
     });
     return card;
@@ -366,7 +364,7 @@
       track.fade_in = Math.min(track.fade_in, duration); track.fade_out = Math.min(track.fade_out, duration);
     }
     if (clamped) persist();
-    if (!drag) extent = Math.min(1200, Math.max(10, Math.ceil(totalDuration() + Math.max(10, totalDuration() * .15))));
+    if (!drag) extent = Math.max(10, Math.ceil(totalDuration() + Math.max(10, totalDuration() * .15)));
     const width = Math.max(540, $('#editor-timeline-scroll').clientWidth) * Number($('#editor-zoom').value);
     $('#editor-timeline').style.width = `${width}px`;
     const ruler = $('#editor-ruler');
@@ -538,16 +536,14 @@
           let trimStart = Math.max(0, Math.min(source.duration, Number(saved.trim_start) || 0));
           let trimEnd = saved.trim_end == null ? source.duration : Math.max(0, Math.min(source.duration, Number(saved.trim_end) || 0));
           if (Math.round(trimStart * 48000) >= Math.round(trimEnd * 48000)) { trimStart = 0; trimEnd = source.duration; }
-          const duration = trimEnd - trimStart;
           tracks[index] = { ...source, kind: saved.kind,
             trim_start: trimStart, trim_end: trimEnd,
             volume: typeof saved.volume === 'number' ? Math.max(0, Math.min(4, saved.volume)) : 1,
             loop: saved.loop === true,
-            loop_duration: typeof saved.loop_duration === 'number' && saved.loop_duration > 0 ? Math.min(1200, saved.loop_duration) : null,
-            start: Math.max(0, Math.min(600, 1200 - duration, Number(saved.start) || 0)),
-            fade_in: Math.max(0, Math.min(600, Number(saved.fade_in) || 0)),
-            fade_out: Math.max(0, Math.min(600, Number(saved.fade_out) || 0)) };
-          tracks[index].start = Math.min(tracks[index].start, maxStart(tracks[index]));
+            loop_duration: restoredSeconds(saved.loop_duration) || null,
+            start: restoredSeconds(saved.start),
+            fade_in: restoredSeconds(saved.fade_in),
+            fade_out: restoredSeconds(saved.fade_out) };
           updateCard(index);
         } catch (_) { error('Одне з джерел чернетки недоступне. Додай аудіо знову.'); }
       }

@@ -121,7 +121,7 @@ def test_existing_database_and_wav_remain_usable(tmp_path):
 
 
 def test_export_failure_does_not_publish_or_leave_partial_files(tmp_path, monkeypatch):
-    def fail(*_):
+    def fail(*_, **__):
         raise RuntimeError("Encoder failed")
 
     monkeypatch.setattr("voice_studio.audio_processing.run_ffmpeg", fail)

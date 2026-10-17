@@ -137,7 +137,7 @@ test('audio editor accepts subsecond clips without changing the voice sample min
   assert.ok(s.tracks[0].stopped);
 });
 
-test('audio editor duration limit stops capture and delivers the recording', async () => {
+test('an optional recorder duration limit stops capture and delivers the recording', async () => {
   const s = setup({ minSeconds: .1, maxSeconds: 599 });
   await s.recorder.start();
   s.setTime(599100);
@@ -147,4 +147,19 @@ test('audio editor duration limit stops capture and delivers the recording', asy
   await flush();
   assert.equal(s.ready.length, 1);
   assert.equal(s.recorder.phase, 'ready');
+});
+
+test('audio editor can record beyond previous duration and byte limits', async () => {
+  const s = setup({ minSeconds: .1, maxBytes: Infinity });
+  await s.recorder.start();
+  s.setTime(2 * 60 * 60 * 1000 + 100);
+  s.tick();
+  assert.equal(s.recorder.phase, 'recording');
+  s.instance().ondataavailable({ data: new Blob([new Uint8Array(65 * 1024 * 1024)], { type: 'audio/webm' }) });
+  assert.deepEqual(s.errors, []);
+  s.recorder.stop();
+  await flush();
+  assert.equal(s.ready.length, 1);
+  assert.ok(s.ready[0].size > 64 * 1024 * 1024);
+  assert.ok(s.tracks[0].stopped);
 });

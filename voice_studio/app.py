@@ -19,7 +19,7 @@ from starlette.background import BackgroundTask
 
 from .config import DATA, LANGUAGES, ROOT
 from .audio_processing import MAX_SPEED, MIN_SPEED, MIME_TYPES
-from .audio_editor import MAX_TIMELINE_SECONDS, MixRequest, decode_source, render_mix, waveform
+from .audio_editor import MixRequest, decode_source, render_mix, waveform
 from .engine import LocalEngine
 from .speech_script import Speech, parse_script
 from .storage import Storage, identifier, now
@@ -257,12 +257,8 @@ def create_app(root: Path = DATA, engine=None):
         try:
             with TemporaryDirectory(prefix="editor-upload-", dir=root) as temporary:
                 source = Path(temporary) / "sample"
-                size = 0
                 with source.open("wb") as output:
                     while chunk := await sample.read(1024 * 1024):
-                        size += len(chunk)
-                        if size > MAX_UPLOAD:
-                            raise HTTPException(413, "Максимальний розмір файлу — 64 МБ.")
                         output.write(chunk)
                 duration = await run_in_threadpool(decode_source, source, destination)
             row = dict(id=key, name=(Path(sample.filename or "Запис із мікрофона").name[:120]),
@@ -289,7 +285,7 @@ def create_app(root: Path = DATA, engine=None):
             def describe():
                 with TemporaryDirectory(prefix="waveform-", dir=root) as temporary:
                     decoded = Path(temporary) / "audio.wav"
-                    decode_source(source, decoded, MAX_TIMELINE_SECONDS if kind == "generation" else 600)
+                    decode_source(source, decoded)
                     return waveform(decoded)
             try:
                 return {"id": key, "name": row.get("name") or row.get("text") or "Доріжка",
