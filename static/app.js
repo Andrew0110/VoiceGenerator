@@ -276,11 +276,11 @@ function renderVoices() {
       const name = prompt('Нова назва голосу:', voice.name);
       if (!name?.trim()) return;
       await api(`/api/voices/${voice.id}`, json('PATCH', { name: name.trim() }));
-      await refresh(true);
+      await refresh({ voices: true });
     }), action('Видалити', async () => {
       if (!confirm(`Видалити голос «${voice.name}» і його зразок? Створені аудіофайли залишаться в розділі «Мої аудіо».`)) return;
       await api(`/api/voices/${voice.id}`, { method: 'DELETE' });
-      await refresh(true);
+      await refresh({ voices: true });
     }, 'danger'));
     card.append(actions);
     return card;
@@ -288,29 +288,70 @@ function renderVoices() {
   $('#voices-list').replaceChildren(...(nodes.length ? nodes : [emptyState('Кожен голос має свою історію.', 'Додай короткий запис, щоб створювати озвучення цим голосом.', true)]));
 }
 let refreshPromise = null;
-function refresh(forceVoices = false) {
-  if (refreshPromise) return refreshPromise.then(() => forceVoices ? refresh(true) : undefined);
+let refreshTimer = null;
+let connectionFailed = false;
+const allResources = { status: true, voices: true, jobs: true };
+
+function scheduleRefresh() {
+  clearTimeout(refreshTimer);
+  refreshTimer = null;
+  if (document.hidden) return;
+  if (connectionFailed) {
+    refreshTimer = setTimeout(() => refresh(allResources), 5000);
+  } else if (state.jobs.some(job => ['queued', 'running'].includes(job.status))) {
+    refreshTimer = setTimeout(() => refresh(), 2000);
+  }
+}
+
+function refresh({ status = false, voices = false, jobs = false } = { jobs: true }) {
+  // A refresh after a mutation must read data after any earlier request finishes.
+  if (refreshPromise) return refreshPromise.then(() => refresh({ status, voices, jobs }));
+  clearTimeout(refreshTimer);
+  refreshTimer = null;
   refreshPromise = (async () => {
-  try {
-    const [status, voices, jobs] = await Promise.all([api('/api/status'), api('/api/voices'), api('/api/generations')]);
-    state.installed = status.installed;
-    $('#setup-notice').hidden = status.installed;
-    $('#connection-notice').hidden = true;
-    if (forceVoices || JSON.stringify(state.voices) !== JSON.stringify(voices)) {
-      state.voices = voices;
-      renderVoices();
+    try {
+      const [newStatus, newVoices, newJobs] = await Promise.all([
+        status || connectionFailed ? api('/api/status') : null,
+        voices ? api('/api/voices') : null,
+        jobs ? api('/api/generations') : null,
+      ]);
+      if (newStatus) {
+        state.installed = newStatus.installed;
+        $('#setup-notice').hidden = newStatus.installed;
+      }
+      if (newVoices) {
+        state.voices = newVoices;
+        renderVoices();
+      }
+      if (newJobs) {
+        state.jobs = newJobs;
+        window.dispatchEvent(new CustomEvent('studio-jobs'));
+        renderJobs();
+      }
+      connectionFailed = false;
+      $('#connection-notice').hidden = true;
+      updateButton();
+    } catch (error) {
+      connectionFailed = true;
+      $('#connection-notice').hidden = false;
+      state.installed = false;
+      updateButton();
+    } finally {
+      refreshPromise = null;
+      scheduleRefresh();
     }
-    state.jobs = jobs;
-    window.dispatchEvent(new CustomEvent('studio-jobs'));
-    renderJobs(); updateButton();
-  } catch (error) {
-    $('#connection-notice').hidden = false;
-    state.installed = false;
-    updateButton();
-  } finally { refreshPromise = null; }
   })();
   return refreshPromise;
 }
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    clearTimeout(refreshTimer);
+    refreshTimer = null;
+  } else {
+    refresh(allResources);
+  }
+});
 
 document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => showView(button.dataset.view)));
 document.querySelectorAll('[data-add-voice]').forEach(button => button.addEventListener('click', openVoiceDialog));
@@ -362,6 +403,7 @@ $('#generate').addEventListener('click', async () => {
     state.activeId = job.id;
     state.jobs.unshift(job); renderJobs();
     toast('Текст додано до черги генерації.');
+    await refresh();
   } catch (error) { toast(error.message); }
   finally { state.submitting = false; updateButton(); }
 });
@@ -383,7 +425,7 @@ $('#voice-form').addEventListener('submit', async event => {
   try {
     const voice = await api('/api/voices', { method: 'POST', body: form });
     $('#voice-dialog').close(); event.target.reset();
-    await refresh(true);
+    await refresh({ voices: true });
     $('#voice-select').value = voice.id;
     $('#language').value = voice.language;
     voiceHint(); toast('Голос збережено. Можна створювати озвучення.');
@@ -409,5 +451,4 @@ window.addEventListener('hashchange', () => {
   if (['studio', 'editor', 'voices', 'history'].includes(view)) showView(view);
 });
 renderVoices();
-refresh(true);
-setInterval(refresh, 2000);
+refresh(allResources);
