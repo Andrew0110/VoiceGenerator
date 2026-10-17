@@ -1,0 +1,6 @@
+mlx-audio==0.5.9
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+python-multipart>=0.0.22,<1
+soundfile>=0.13,<1
+imageio-ffmpeg==0.6.0

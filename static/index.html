@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#f5f4ef">
+  <title>Голос — локальна аудіостудія</title>
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/voice-recorder.js" defer></script>
+  <script src="/static/app.js" defer></script>
+  <script src="/static/audio-editor.js" defer></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="Голос — головна"><span class="brand-icon">ııı</span> голос<span class="brand-dot">.</span></a>
+    <p class="sidebar-label">ОСОБИСТА АУДІОСТУДІЯ</p>
+    <nav aria-label="Розділи студії">
+      <button class="nav-item active" data-view="studio"><span>✧</span> Озвучення</button>
+      <button class="nav-item" data-view="voices"><span>◎</span> Мої голоси <span id="voice-count" class="nav-count">0</span></button>
+      <button class="nav-item" data-view="history"><span>◷</span> Мої аудіо <span id="history-count" class="nav-count">0</span></button>
+      <button class="nav-item" data-view="editor"><span>≋</span> Аудіоредактор</button>
+    </nav>
+    <div class="sidebar-bottom"><span class="local-dot"></span> Працює на твоєму Mac<p>Тексти й аудіо зберігаються тут.</p><div class="model-label">OMNIVOICE <span>LOCAL</span></div></div>
+  </aside>
+
+  <main>
+    <header class="topbar"><span id="breadcrumb">Студія / Озвучення</span><span class="privacy"><span class="local-dot"></span> Локально й приватно</span></header>
+    <div id="setup-notice" class="notice" hidden>Модель ще не встановлена. Відкрий <strong>setup.command</strong> у папці застосунку для одноразового завантаження.</div>
+    <div id="connection-notice" class="notice error" hidden>З’єднання зі студією втрачено. Перевір, чи запущено start.command.</div>
+
+    <section id="view-studio" class="view">
+      <div class="page-heading"><div><div class="eyebrow">ВІД СЛІВ ДО ЗВУКУ</div><h1>Дай тексту голос.</h1><p>Твоя історія. Твій голос. На твоєму комп’ютері.</p></div><div class="heading-art" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+      <div class="studio-grid">
+        <section class="editor card" aria-label="Редактор озвучення">
+          <div class="card-top"><h2>Текст озвучення</h2><button id="example" class="text-button">Вставити приклад ↗</button></div>
+          <label class="sr-only" for="text">Текст для озвучення</label>
+          <textarea id="text" maxlength="3000" placeholder="Кожна історія починається зі слова.&#10;&#10;Напиши або встав сюди текст, а ми перетворимо його на голос…"></textarea>
+          <div class="editor-bottom"><span>Пауза: <code>&lt;break time="10.0s" /&gt;</code></span><span><b id="char-count">0</b> / 3 000</span></div>
+          <div class="generate-row"><span id="file-info" class="file-info">↳ WAV · 24 кГц</span><button id="generate" class="primary" disabled><span>✧</span> Створити аудіо <span>↗</span></button></div>
+        </section>
+        <aside class="settings card">
+          <div class="card-top"><h2>Як це звучатиме</h2><span class="small-spark">✧</span></div>
+          <label for="voice-select">Голос</label><select id="voice-select"><option value="">Голос моделі</option></select>
+          <p id="voice-hint" class="field-hint">Базовий голос може відрізнятися між генераціями. Додай зразок для власного голосу.</p>
+          <button class="add-voice-link" data-add-voice>＋ Додати свій голос</button>
+          <div class="divider"></div>
+          <label for="language">Мова озвучення</label><select id="language"><option value="uk">Українська</option><option value="en">English</option></select>
+          <label for="quality">Якість генерації</label><select id="quality"><option value="16">Швидка</option><option value="32" selected>Збалансована</option><option value="48">Ретельна</option></select>
+          <p class="field-hint">Ретельний режим потребує більше часу. Почни з короткого тексту.</p>
+          <label for="speed">Швидкість мовлення <output id="speed-value" for="speed">1,00×</output></label>
+          <div class="speed-control"><input id="speed" type="range" min="0.7" max="1.3" step="0.05" value="1" aria-describedby="speed-hint"><div class="speed-scale"><span>Повільніше</span><button id="reset-speed" class="text-button" type="button">1×</button><span>Швидше</span></div></div>
+          <p id="speed-hint" class="field-hint">Змінює темп голосу. Тривалість заданих пауз залишається незмінною.</p>
+          <label for="output-format">Формат файлу</label><select id="output-format"><option value="wav">WAV · без стиснення</option><option value="mp3">MP3 · компактний файл</option><option value="flac">FLAC · без втрат</option></select>
+          <div id="mp3-settings" class="mp3-settings" hidden><label for="mp3-bitrate">Бітрейт MP3</label><select id="mp3-bitrate"><option value="64" selected>64 кбіт/с · рекомендовано для голосу</option><option value="96">96 кбіт/с</option><option value="128">128 кбіт/с</option></select></div>
+          <p class="field-hint">Усі формати — 24 кГц. MP3 займає менше місця; WAV і FLAC зберігають якість.</p>
+          <div class="offline-note"><span>⌘</span><div><strong>Усе залишається тут</strong><p>Генерація без хмарних сервісів і плати за символи.</p></div></div>
+        </aside>
+      </div>
+      <section id="latest-result" class="result card" hidden aria-live="polite"></section>
+      <div class="section-heading"><h2>Останні озвучення</h2><button class="text-button" data-view="history">Усі мої аудіо →</button></div>
+      <div id="recent-list"></div>
+      <footer><span class="local-dot"></span> Локальна модель OmniVoice <span class="footer-right">Створюй у своєму ритмі.</span></footer>
+    </section>
+
+    <section id="view-editor" class="view" hidden>
+      <div class="page-heading"><div><div class="eyebrow">ЗВУК У ТВОЄМУ РИТМІ</div><h1>Збери своє звучання.</h1><p>Твої доріжки, спільна шкала та плавні переходи.</p></div></div>
+      <div id="editor-tracks" class="editor-sources"></div>
+      <button id="editor-add-track" class="add-track" type="button" aria-label="Додати доріжку"><span aria-hidden="true">＋</span> Додати доріжку</button>
+      <section class="card timeline-card" aria-label="Монтажна шкала">
+        <div class="timeline-toolbar"><div><h2>Монтажна шкала</h2><p class="field-hint">Перетягуй доріжки або змінюй час початку. Стрілки ← → зміщують на 0,1 с; із Shift — на 1 с.</p></div><div class="timeline-zoom"><label for="editor-zoom">Масштаб</label><input id="editor-zoom" type="range" min="1" max="8" step="0.5" value="1"></div></div>
+        <div id="editor-timeline-scroll" class="timeline-scroll"><div id="editor-timeline" class="timeline-content"><div id="editor-ruler" class="timeline-ruler"></div><div id="editor-lanes"></div><div id="editor-playhead" class="timeline-playhead" hidden></div></div></div>
+        <div class="timeline-transport"><button id="editor-preview" class="secondary" disabled>▶ Прослухати мікс</button><button id="editor-stop" class="text-button" disabled>■ На початок</button><output id="editor-duration">0:00 / 0:00</output><span id="editor-preview-status" class="field-hint" role="status">Додай хоча б одну доріжку.</span></div>
+        <audio id="editor-player" controls hidden aria-label="Прослухати готовий мікс"></audio>
+      </section>
+      <form id="editor-save-form" class="card editor-save">
+        <div class="card-top"><h2>Збереження міксу</h2><span class="field-hint">Обробка на цьому комп’ютері</span></div>
+        <div class="editor-save-fields"><div><label for="editor-name">Назва треку</label><input id="editor-name" maxlength="60" value="Мій мікс" required></div><div><label for="editor-save-mode">Куди зберегти</label><select id="editor-save-mode"><option value="">Окремий новий трек</option></select></div><div><label for="editor-format">Формат</label><select id="editor-format"><option value="wav">WAV</option><option value="mp3">MP3</option><option value="flac">FLAC</option></select></div></div>
+        <div id="editor-mp3-settings" class="editor-mp3-settings" hidden><label for="editor-mp3-bitrate">Якість MP3</label><select id="editor-mp3-bitrate"><option value="64">64 кбіт/с · менший файл</option><option value="96">96 кбіт/с · збалансовано</option><option value="128">128 кбіт/с · вища якість</option></select><p class="field-hint">Вищий бітрейт зберігає більше деталей звуку, але збільшує розмір файлу.</p></div>
+        <div class="editor-save-bottom"><p id="editor-save-hint" class="field-hint">Новий трек з’явиться в розділі «Мої аудіо». Початкові записи збережуться.</p><button id="editor-save" class="primary" type="submit" disabled>Зберегти новий трек ↗</button></div>
+        <p class="field-hint">Файли й записи: до 10 хвилин і 64 МБ. Аудіо з розділу «Мої аудіо» та готовий мікс: до 20 хвилин. Початок доріжки: до 600 с. Експорт: стерео, 48 кГц. Гучність міксу автоматично зменшується, якщо сума доріжок перевищує допустимий рівень.</p>
+      </form>
+      <p id="editor-error" class="form-error" role="alert" hidden></p>
+      <section id="editor-result" class="result card" hidden aria-live="polite"></section>
+    </section>
+
+    <section id="view-voices" class="view" hidden>
+      <div class="page-heading"><div><div class="eyebrow">ТВОЯ БІБЛІОТЕКА</div><h1>Голоси з характером.</h1><p>Збережи зразок один раз. Використовуй у нових історіях.</p></div><button class="primary" data-add-voice>＋ Додати голос</button></div>
+      <div class="info-strip">Для найкращого результату: 5–15 секунд чистого мовлення без музики й точний текст запису. Для українського озвучення бажано додати український зразок.</div>
+      <div id="voices-list" class="voices-grid"></div>
+    </section>
+
+    <section id="view-history" class="view" hidden>
+      <div class="page-heading"><div><div class="eyebrow">ТВОЇ АУДІОФАЙЛИ</div><h1>Мої аудіо.</h1><p>Прослуховуй, завантажуй і повертайся до своїх записів.</p></div></div>
+      <label class="sr-only" for="history-search">Пошук у моїх аудіо</label><input id="history-search" class="search-input" placeholder="Пошук за текстом або голосом…" type="search">
+      <div id="history-list"></div>
+    </section>
+  </main>
+
+  <dialog id="voice-dialog">
+    <form id="voice-form">
+      <div class="dialog-heading"><div><div class="eyebrow">НОВИЙ ГОЛОС</div><h2>Збережи його звучання.</h2></div><button id="close-dialog" class="icon-button" type="button" aria-label="Закрити">×</button></div>
+      <p class="dialog-intro">Завантаж аудіофайл або запиши свій голос тут. Говори природно, без музики та фонових розмов.</p>
+      <label for="voice-name">Назва голосу</label><input id="voice-name" name="name" maxlength="60" placeholder="Наприклад, мій голос" required>
+      <div class="two-fields"><div><label for="voice-file">Аудіофайл</label><input id="voice-file" name="sample" type="file" accept=".wav,.flac,.aiff,.aif,.mp3,.m4a,.mp4,.webm,.ogg"><p class="field-hint">WAV, FLAC, AIFF, MP3, M4A, WebM або OGG · до 64 МБ</p></div><div><label for="voice-language">Мова запису</label><select id="voice-language" name="language"><option value="uk">Українська</option><option value="en">English</option></select></div></div>
+      <section class="voice-recording" aria-label="Запис із мікрофона">
+        <div class="recording-controls"><button id="record-voice" class="secondary" type="button">● Записати з мікрофона</button><button id="stop-recording" class="secondary recording-stop" type="button" hidden>■ Зупинити</button><output id="recording-time" aria-label="Тривалість запису">0:00</output></div>
+        <p id="recording-status" class="field-hint" role="status">Мікрофон увімкнеться після натискання кнопки й дозволу браузера.</p>
+        <audio id="voice-preview" aria-label="Прослухати зразок голосу" controls hidden></audio>
+        <p class="field-hint">Від 3 секунд, без верхнього обмеження тривалості. Для початку рекомендовано 5–15 секунд; довгі зразки потребують більше пам’яті й часу.</p>
+      </section>
+      <section class="reading-guide" aria-label="Рекомендований текст для запису"><div class="card-top"><h3>Що можна прочитати</h3><button id="use-reading-text" class="text-button" type="button">Підставити в текст запису ↗</button></div><p id="reading-text">Сьогодні я говорю спокійно й у звичному темпі. За вікном тихо, і можна нікуди не поспішати. Цікаво, яким буде завтрашній день?</p><p class="field-hint">Прочитай своїм звичайним голосом. Якщо зміниш слова, виправ текст нижче, щоб він точно відповідав запису.</p></section>
+      <label for="voice-transcript">Що саме сказано в записі</label><textarea id="voice-transcript" name="transcript" maxlength="20000" placeholder="Дослівно перепиши весь текст запису…" required></textarea>
+      <p class="field-hint">Точний текст допомагає моделі відтворити голос. Використовуй власний голос або голос із дозволом його власника.</p>
+      <p id="voice-error" class="form-error" role="alert" hidden></p>
+      <div class="dialog-actions"><button class="secondary" id="cancel-dialog" type="button">Скасувати</button><button id="save-voice" class="primary" type="submit">Зберегти голос ↗</button></div>
+    </form>
+  </dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>
